@@ -1,0 +1,49 @@
+<?php
+
+namespace {{NAMESPACE}};
+
+use PluginClassName\Foundation\Jobs\BaseJob;
+use PluginClassName\Support\Validator;
+
+if (!defined('ABSPATH')) { exit; }
+
+/**
+ * Esempio payload (adatta alle tue esigenze):
+ * @param array{
+ *   // es.: "email": string,
+ *   // "booking_id"?: int,
+ * } $payload
+ */
+class {{CLASS}} extends BaseJob
+{
+    public const ACTION       = '{{ACTION}}';
+    public const QUEUE        = '{{QUEUE}}';
+    public const MAX_ATTEMPTS = {{MAX_ATTEMPTS}};
+
+    /**
+     * Esegue la logica del job.
+     * NB: Usa static::dispatch([...]) per accodare con il tuo driver,
+     *     oppure static::dispatchNow([...]) per esecuzione immediata.
+     */
+    public static function handle(array $payload): void
+    {
+        // 1) Validazione (adatta regole ai tuoi casi d'uso)
+        static::validatePayload($payload, [
+            // 'email'      => 'required|email',
+            // 'booking_id' => 'nullable|integer',
+        ]);
+
+        // 2) Logica
+        // TODO: implementa la logica del job
+        // es.: chiamate API, generazione PDF, invio email, ecc.
+    }
+
+    /**
+     * Wrapper di validazione che delega al tuo Validator:
+     * Validator::validate($input, $rules, $messages, true);
+     */
+    public static function validatePayload(array $input, array $rules, array $messages = []): void
+    {
+        Validator::validate($input, $rules, $messages, true);
+    }
+}

@@ -1,53 +1,72 @@
 <?php
 
-if (!function_exists('config')) {
+if (!function_exists('class_basename')) {
 	/**
-	 * Get the specified configuration value.
-	 * 
-	 * If an array is passed as the key, we will assume you want to set an array of values.
-	 *
-	 * @param  array<string, mixed>|string|null  $key
-	 * @param  mixed  $default
-	 * @return mixed
+	 * Get the class name from a fully qualified class name.
 	 */
-	function config($key = null, $default = null)
-	{
-		static $configs = [];
+    function class_basename($class)
+    {
+        $class = is_object($class) ? get_class($class) : $class;
+        return basename(str_replace('\\', '/', $class));
+    }
+}
 
-		$files = glob(PLUGIN_CONST_DIR . '/config/*.php') ?: [];
-		if (empty($configs)) {
-			foreach ($files as $file) {
-				$name = basename($file, '.php');
-				$configs[$name] = require $file;
-			}
-		}
+if (!function_exists('dispatch')) {
+    /**
+     * @param class-string<BaseJob> $jobClass
+     */
+    function dispatch(string $jobClass, array $payload = [], int $delaySeconds = 0): void
+    {
+        $jobClass::dispatch($payload, $delaySeconds);
+    }
+}
 
-		if (is_null($key)) {
-			return $configs;
-		}
+if(!function_exists('get_public_key')) {
+    function get_public_key(): string
+    {
+        return defined('PluginClassName_PUBLIC_KEY') ? PluginClassName_PUBLIC_KEY : null;
+    }
+}
 
-		if (is_array($key)) {
-			foreach ($key as $fullKey => $value) {
-				$parts = explode('.', $fullKey);
-				$ref =& $configs;
-				foreach ($parts as $part) {
-					$ref =& $ref[$part];
-				}
-				$ref = $value;
-			}
-			return true;
-		}
+if (!function_exists('encrypt_value')) {
+    function encrypt_value(string $plain): string
+    {
+        $k = base64_decode(get_public_key());
+        if (!$k) {
+            throw new \RuntimeException('Public key is not defined.');
+        }
 
-		$segments = explode('.', $key);
-		$value = $configs;
+        $n = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        $c = sodium_crypto_secretbox(serialize($plain), $n, $k);
 
-		foreach ($segments as $segment) {
-			if (!is_array($value) || !array_key_exists($segment, $value)) {
-				return $default;
-			}
-			$value = $value[$segment];
-		}
+        return base64_encode($n.$c);
+    }
+}
 
-		return $value;
-	}
+if (!function_exists('decrypt_value')) {
+    function decrypt_value(string $encrypted): ?string
+    {
+        $k = base64_decode(get_public_key());
+        if (!$k) {
+            throw new \RuntimeException('Public key is not defined.');
+        }
+
+        $decoded = base64_decode($encrypted);
+        $n = substr($decoded, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        $c = substr($decoded, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+        $p = sodium_crypto_secretbox_open($c, $n, $k);
+
+        if (!is_string($p)) {
+            return null;
+        }
+
+        return unserialize($p);
+    }
+}
+
+if (!function_exists('base64url_decode')) {
+    function base64url_decode($s) {
+        $s = strtr($s, '-_', '+/');
+        return base64_decode($s . str_repeat('=', 3 - (3 + strlen($s)) % 4));
+    }
 }

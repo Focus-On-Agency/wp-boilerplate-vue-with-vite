@@ -3,6 +3,12 @@
 namespace PluginClassName\Foundation\RegistrableEntity;
 
 use PluginClassName\Foundation\RegistrableEntity;
+use function register_taxonomy;
+use function is_wp_error;
+
+if (!defined('ABSPATH')) {
+	exit;
+}
 
 class Taxonomy extends RegistrableEntity
 {
@@ -12,6 +18,14 @@ class Taxonomy extends RegistrableEntity
 
 	public function __construct(string $slug)
 	{
+		if (empty(trim($slug))) {
+			throw new \InvalidArgumentException('Taxonomy slug cannot be empty');
+		}
+		
+		if (strlen($slug) > 32) {
+			throw new \InvalidArgumentException('Taxonomy slug cannot exceed 32 characters');
+		}
+		
 		$this->slug = $slug;
 		$this->args = [
 			'public' => true,
@@ -32,13 +46,23 @@ class Taxonomy extends RegistrableEntity
 
 	public function for(array|string $postTypes): static
 	{
-		$this->postTypes = (array) $postTypes;
+		$postTypesArray = (array) $postTypes;
+		if (empty($postTypesArray)) {
+			throw new \InvalidArgumentException('Post types array cannot be empty');
+		}
+		$this->postTypes = $postTypesArray;
 		return $this;
 	}
 
 	public function label(string $key, string $value): static
 	{
 		$this->args['labels'][$key] = $value;
+		return $this;
+	}
+
+	public function not_public(): static
+	{
+		$this->args['public'] = false;
 		return $this;
 	}
 
@@ -50,6 +74,10 @@ class Taxonomy extends RegistrableEntity
 
 	public function register(): void
 	{
-		register_taxonomy($this->slug, $this->postTypes, $this->args);
+		$result = register_taxonomy($this->slug, $this->postTypes, $this->args);
+		
+		if (is_wp_error($result)) {
+			throw new \Exception("Failed to register taxonomy '{$this->slug}': " . $result->get_error_message());
+		}
 	}
 }

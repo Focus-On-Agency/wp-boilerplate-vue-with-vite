@@ -2,72 +2,58 @@
 
 namespace PluginClassName\Models;
 
+/**
+ * @method
+ */
+
 use DateTimeInterface;
-use DateTimeImmutable;
+
 use JsonSerializable;
+use PluginClassName\Foundation\Model\Helper;
+use PluginClassName\Foundation\Model\Builder;
+use PluginClassName\Foundation\Model\Concerns\HasAttributes;
+use PluginClassName\Foundation\Model\Concerns\HasRelationships;
+use PluginClassName\Foundation\Model\Concerns\Withable;
+use PluginClassName\Support\Logger;
 
 if (!defined('ABSPATH')) {
 	exit;
 }
 
-/**
- * Abstract base model class for database operations.
- * 
- * This class provides a fluent interface for database operations including:
- * - CRUD operations (Create, Read, Update, Delete)
- * - Query building with where clauses, ordering, and pagination
- * - Relationship handling (hasOne, hasMany, belongsTo)
- * - Automatic timestamp management
- * - Soft delete functionality
- */
 abstract class Model implements JsonSerializable
 {
+	use Helper, Withable, HasRelationships, HasAttributes;
+
 	/** @var string The database table associated with the model */
-	protected static string $table = '';
+	protected $table = '';
+
+	/** @var bool Whether to include the table custom prefix when querying */
+	protected $withOutPrefix = false;
+
 	/** @var string The primary key column name */
-	protected static string $primaryKey = 'ID';
+	protected $primaryKey = 'id';
+
+	/** @var string The data type of the primary key */
+	protected $keyType = 'int';
+
 	/** @var bool Whether to automatically manage created_at and updated_at timestamps */
-	protected static bool $timestamps = true;
+	protected $timestamps = true;
+
 	/** @var bool Whether the model supports soft deletes via deleted_at */
-	protected static bool $trashable = true;
-	/** @var ?\wpdb WordPress database connection instance */
-	protected static ?\wpdb $db = null;
-	/** @var array Global scope conditions applied to all queries */
-	protected static array $globalScope = [];
+	protected $trashable = true;
+	
 	/** @var array Fillable attributes for mass assignment */
-	protected static $fillable = [];
+	protected $fillable = [];
+
 	/** @var array Casts for attribute types */
-	protected static array $casts = [];
+	protected $casts = [];
 
-
-	/** @var array Collection of where conditions for the query */
-	private array $conditions = [];
-	/** @var ?string ORDER BY clause for the query */
-	private ?string $orderBy = null;
-	/** @var ?string LIMIT clause for the query */
-	private ?string $limit = null;
-	/** @var array Parameter bindings for prepared statements */
-	private array $bindings = [];
-	/** @var array Columns to select in the query */
-	private array $columns = ['*'];
-	/** @var ?string OFFSET clause for the query */
-	private ?string $offset = null;
 	/** @var array Associative array of model attributes */
-	protected array $attributes = [];
+	protected $attributes = [];
 
-	/**
-	 * Get the WordPress database connection instance.
-	 *
-	 * @return \wpdb The WordPress database connection
-	 */
-	private static function db(): \wpdb
-	{
-		if (!self::$db) {
-			global $wpdb;
-			self::$db = $wpdb;
-		}
-		return self::$db;
-	}
+	protected $appends = [];
+
+	protected array $with = [];
 
 	/**
 	 * Initialize a new model instance.
@@ -76,25 +62,15 @@ abstract class Model implements JsonSerializable
 	 */
 	public function __construct(array $attributes = [])
 	{
-		if (empty(static::$table)) {
+		if (empty($this->table)) {
 			throw new \InvalidArgumentException('Table name is required');
 		}
-
-		if (static::$timestamps) {
-			$this->columns[] = 'created_at';
-			$this->columns[] = 'updated_at';
-		}
-
-		if (static::$trashable) {
-			$this->columns[] = 'deleted_at';
-			$this->where('deleted_at', null, 'IS');
-		}
-
-		$this->applyGlobalScope();
 
 		if (!empty($attributes)) {
 			$this->hydrate($attributes);
 		}
+
+		$this->casts = array_merge($this->casts, $this->getDefaultCasts());
 	}
 
 	/**
@@ -105,19 +81,38 @@ abstract class Model implements JsonSerializable
 	 */
 	public function __get(string $name)
 	{
-		// Converti il nome tra camelCase e snake_case
 		$snakeName = $this->camelToSnake($name);
 		$camelName = $this->snakeToCamel($name);
+		$accessor = 'get' . ucfirst($camelName) . 'Attribute';
 
-		// Controlliamo se la proprietà esiste nel dataset
-		if (isset($this->attributes[$snakeName])) {
-			$value = $this->attributes[$snakeName];
-			if (isset(static::$casts[$snakeName])) {
-				$value = $this->castAttribute($snakeName, $value);
+		$rawExists = array_key_exists($snakeName, $this->attributes);
+		$raw = $rawExists ? $this->attributes[$snakeName] : null;
+
+		if (method_exists($this, $accessor)) {
+			return $this->{$accessor}($raw);
+		}
+
+		if ($rawExists) {
+			if (isset($this->casts[$snakeName])) {
+				$raw = $this->castAttribute($raw, $this->casts[$snakeName]);
 			}
 
-			$method = 'get' . ucfirst($camelName) . 'Attribute';
-			return method_exists($this, $method) ? $this->$method($this->attributes[$snakeName]) : $value;
+			return $raw;
+		}
+
+		if (method_exists($this, $snakeName)) {
+			$loaded = $this->getRelation($this, $snakeName);
+			if ($loaded !== null) return $loaded;
+
+			$rel = $this->{$snakeName}();
+
+			if (is_object($rel) && method_exists($rel, 'getResults')) {
+				$rel = $rel->getResults();
+			}
+
+			$this->setRelation($snakeName, $rel);
+
+			return $rel;
 		}
 
 		return null;
@@ -133,277 +128,217 @@ abstract class Model implements JsonSerializable
 	{
 		$snakeName = $this->camelToSnake($name);
 		$camelName = $this->snakeToCamel($name);
+		$method = 'set' . ucfirst($camelName) . 'Attribute';
 
-		if (isset(static::$casts[$snakeName])) {
-			$value = $this->castToStorage($snakeName, $value);
+		if (method_exists($this, $method)) {
+			$this->{$method}($value);
+			return;
 		}
 
-		$method = 'set' . ucfirst($camelName) . 'Attribute';
-		$this->attributes[$snakeName] = method_exists($this, $method) ? $this->$method($value) : $value;
+		if (isset($this->casts[$snakeName])) {
+			$value = $this->castToStorage($value, $this->casts[$snakeName]);
+		}
+
+		$this->attributes[$snakeName] = $value;
 	}
 
 	/**
-	 * Hydrate the model with an array of attributes.
+	 * Convert the model to its string representation.
 	 *
-	 * @param array $data The data to hydrate the model with
-	 * @return static The current model instance
+	 * @return string
 	 */
-	private function hydrate(array $data): static
+	public function __toString(): string
 	{
-		foreach ($data as $key => $value) {
-			$this->attributes[$this->camelToSnake($key)] = $value;
-		}
-		return $this;
+		return json_encode($this->toArray());
 	}
 
+	static public function __callStatic($method, $parameters)
+	{
+		$builder = static::query();
 
+        if (method_exists($builder, $method)) {
+            return $builder->$method(...$parameters);
+        }
+
+        throw new \BadMethodCallException("Method {$method} does not exist on ".static::class." or its Builder.");
+	}
+
+	public function __isset($name): bool
+	{
+		$snake = $this->camelToSnake($name);
+
+		if (array_key_exists($snake, $this->attributes)) return true;
+
+		if ($this->relationLoaded($snake)) return true;
+
+		if (method_exists($this, $snake)) {
+			$rel = $this->{$snake}();
+
+			if (is_object($rel) && method_exists($rel, 'getResults')) {
+
+				$rel = $rel->getResults();
+			}
+
+			$this->setRelation($snake, $rel);
+
+			return $rel !== null;
+		}
+
+		return false;
+	}
+
+	public static function table(): string
+    {
+        $proto = new static();
+        return $proto->getTable();
+    }
+
+    public static function primaryKey(): string
+    {
+        $proto = new static();
+        return $proto->primaryKey;
+    }
+
+	public function getPrimaryKey(): string
+	{
+		return $this->primaryKey;
+	}
+
+    public static function usesTimestamps(): bool
+    {
+        $proto = new static();
+        return $proto->timestamps;
+    }
+
+    public static function isTrashable(): bool
+    {
+        $proto = new static();
+        return $proto->trashable;
+    }
 
 	/**
 	 * Get the table name with the WordPress prefix.
 	 *
 	 * @return string The full table name with prefix
 	 */
-	public static function getTable(): string
+	public function getTable(): string
 	{
 		global $wpdb;
-		return $wpdb->prefix . static::$table;
-	}
+		$customPrefix = defined('PluginClassName_DB_PREFIX') ? PluginClassName_DB_PREFIX : 'fson_';
 
-
-	/**
-	 * Convert a string from camelCase to snake_case.
-	 *
-	 * @param string $input The input string in camelCase
-	 * @return string The converted string in snake_case
-	 */
-	private function camelToSnake(string $input): string
-	{
-		return strtolower(preg_replace('/([a-z])([A-Z])/', '$1_$2', $input));
-	}
-
-	/**
-	 * Convert a string from snake_case to camelCase.
-	 *
-	 * @param string $input The input string in snake_case
-	 * @return string The converted string in camelCase
-	 */
-	private function snakeToCamel(string $input): string
-	{
-		return lcfirst(str_replace(' ', '', ucwords(str_replace('_', ' ', $input))));
-	}
-
-	/**
-	 * Start a new query builder instance.
-	 *
-	 * @return static A new instance of the model
-	 */
-	public static function query(): self {
-		return new static();
-	}
-
-	/**
-	 * Apply global scope conditions to the query.
-	 *
-	 * @return void
-	 */
-	private function applyGlobalScope(): void
-	{
-		if (empty(static::$globalScope)) {
-			return;
+		if ($this->withOutPrefix) {
+			return $wpdb->prefix . $this->table;
 		}
-		foreach (static::$globalScope as $column => $value) {
-			$this->where($column, $value);
+
+		return $wpdb->prefix . $customPrefix . $this->table;
+	}
+
+	/**
+	 * Get the fillable attributes for the model.
+	 *
+	 * @return array The fillable attributes
+	 */
+	public function getFillable(): array
+	{
+		return $this->fillable;
+	}
+
+	public function getAttributes(): array
+	{
+		return $this->attributes;
+	}
+
+	public function getCasts(): array
+	{
+		return $this->casts;
+	}
+
+	public function getDefaultCasts(): array
+	{
+		$default = [];
+
+		$default[$this->primaryKey] = $this->keyType;
+
+		if ($this->timestamps) {
+			$default['created_at'] = 'datetime';
+			$default['updated_at'] = 'datetime';
 		}
-	}
 
-	/**
-	 * Set the columns to be selected.
-	 *
-	 * @param array $columns The columns to select
-	 * @return static The current query builder instance
-	 */
-	public function select(array $columns): self
-	{
-		$this->columns = array_map(fn($col) => "`" . esc_sql($col) . "`", $columns);
-		return $this;
-	}
-
-	/**
-	 * Find a record by its primary key.
-	 *
-	 * @param int $id The primary key value
-	 * @return ?static The found record or null if not found
-	 */
-	public static function find($id): ?static
-	{
-		return static::query()
-			->where(static::$primaryKey, $id)
-			->first()
-		;
-	}
-
-	/**
-	 * Find a record by its primary key or throw an exception if not found.
-	 *
-	 * @param int $id The primary key value
-	 * @return static The found record
-	 * @throws \InvalidArgumentException If the record is not found
-	 */
-	public static function findOrFail(int $id): ?static
-	{
-		$record = self::find($id);
-		if ($record) {
-			throw new \InvalidArgumentException(sprintf('Record with ID %d not found', $id));
+		if ($this->trashable) {
+			$default['deleted_at'] = 'datetime';
 		}
-		return $record;
+
+		return $default;
 	}
 
 	/**
-	 * Get all records from the database.
+	 * Create a new query builder instance for the model.
 	 *
-	 * @return array Array of all records
+	 * @return Builder The query builder instance
 	 */
-	public static function all(): array
-	{
-		return static::query()->get();
-	}
+	public static function query(): Builder
+    {
+		$builder = new Builder(static::class);
+		static::applyGlobalScopes($builder);
 
-	/**
-	 * Add a where clause to the query.
-	 *
-	 * @param string $column The column name
-	 * @param mixed $value The value to compare against
-	 * @param string $operator The comparison operator
-	 * @return static The current query builder instance
-	 * @throws \InvalidArgumentException If an invalid operator is provided
-	 */
-	public function where(string $column, mixed $value, string $operator = '='): self
+		return $builder;
+    }
+
+	public static function applyGlobalScopes(Builder $q): void
 	{
-		$validOperators = ['=', '!=', '<', '>', '<=', '>=', 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'IS', 'IS NOT'];
-		if (!in_array(strtoupper($operator), $validOperators, true)) {
-			throw new \InvalidArgumentException(sprintf('Invalid SQL operator: %s', esc_html($operator)));
+		// Soft delete di default
+		if (static::isTrashable()) {
+			$q->where('deleted_at', null, 'IS');
 		}
-		
-		$this->conditions[] = "`" . esc_sql($column) . "` {$operator} %s";
-		$this->bindings[] = $value;
+
+		// Hook overridabile dal modello concreto (es. Room::booted($q))
+		static::booted($q);
+	}
+
+	protected static function booted(Builder $q): void {}
+
+	/**
+	 * Create a new model instance.
+	 *
+	 * @param array $attributes The attributes to set on the model
+	 * @return static The newly created model instance
+	 */
+	static public function create(array $attributes = []): static
+	{
+		$model = new static();
+		$model->fill($attributes);
+		$model->insertOrUpdate();
+
+		return $model;
+	}
+
+	/**
+	 * Save a new model instance (insert or update).
+	 *
+	 * @param array $attributes The attributes to set on the model
+	 * @return static The newly created model instance
+	 */
+	public function save(): static
+	{
+		$this->insertOrUpdate();
+
 		return $this;
 	}
-
-	/**
-	 * Add an order by clause to the query.
-	 *
-	 * @param string $column The column to order by
-	 * @param string $direction The sort direction (ASC or DESC)
-	 * @return static The current query builder instance
-	 */
-	public function orderBy(string $column, string $direction = 'ASC'): self
-	{
-		$direction = strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC';
-		$this->orderBy = sprintf("ORDER BY `%s` %s", esc_sql($column), $direction);
-		return $this;
-	}
-
-	/**
-	 * Set the maximum number of records to return.
-	 *
-	 * @param int $number The maximum number of records
-	 * @return static The current query builder instance
-	 */
-	public function limit(int $number): self
-	{
-		$this->limit = sprintf("LIMIT %d", $number);
-		return $this;
-	}
-
-	/**
-	 * Set the number of records to skip.
-	 *
-	 * @param int $number The number of records to skip
-	 * @return static The current query builder instance
-	 */
-	public function offset(int $number): self
-	{
-		$this->offset = sprintf("OFFSET %d", $number);
-		return $this;
-	}
-
-	/**
-	 * Build the complete SQL query string.
-	 *
-	 * @param string $baseQuery The base SQL query
-	 * @return string The complete SQL query
-	 */
-	private function buildQuery(string $baseQuery): string
-	{
-		if ($this->conditions) $baseQuery .= " WHERE " . implode(' AND ', $this->conditions);
-		if ($this->orderBy) $baseQuery .= " " . $this->orderBy;
-		if ($this->limit) $baseQuery .= " " . $this->limit;
-		if ($this->offset) $baseQuery .= " " . $this->offset;
-		return $baseQuery;
-	}
-
-	/**
-	 * Execute the query and get the results.
-	 *
-	 * @return array The query results
-	 */
-	public function get(): array
-	{
-		$query = $this->buildQuery("SELECT " . implode(',', $this->columns) . " FROM " . static::getTable());
-		$results = self::db()->get_results(self::db()->prepare($query, ...$this->bindings), ARRAY_A);
 	
-		return array_map(fn($row) => new static($row), $results ?: []);
-	}
-
 	/**
-	 * Get the first record matching the query.
+	 * Update the model instance with new attributes.
 	 *
-	 * @return static|null The first matching record or null if none found
+	 * @param array $attributes The attributes to update
+	 * 
+	 * @return bool|int True if the update was successful
 	 */
-	public function first(): ?static
+	public function update(array $attributes = []): bool|int
 	{
-		$query = $this->buildQuery("SELECT " . implode(',', $this->columns) . " FROM " . static::getTable()) . ' LIMIT 1';
-		$row = self::db()->get_row(self::db()->prepare($query, ...$this->bindings), ARRAY_A);
-
-		return $row ? new static($row) : null;
-	}
-
-	/**
-	 * Check if any record exists matching the query.
-	 *
-	 * @return bool True if records exist, false otherwise
-	 */
-	public function exists(): bool
-	{
-		$query = $this->buildQuery("SELECT 1 FROM " . static::getTable()) . " LIMIT 1";
-		return (bool) self::db()->get_row(self::db()->prepare($query, ...$this->bindings), ARRAY_N);
-	}
-
-	/**
-	 * Count the number of records matching the query.
-	 *
-	 * @return int The number of matching records
-	 */
-	public function count(): int
-	{
-		$query = $this->buildQuery("SELECT COUNT(*) FROM " . static::getTable());
-		return (int) self::db()->get_var(self::db()->prepare($query, ...$this->bindings));
-	}
-
-	/**
-	 * Create a new record in the database.
-	 *
-	 * @param array $data The data to insert
-	 * @return int|null The ID of the inserted record or null if the operation failed
-	 */
-	public static function create(array $data): ?int
-	{
-		if (static::$timestamps) {
-			$data['created_at'] = current_time('mysql');
-			$data['updated_at'] = current_time('mysql');
+		if (!empty($attributes)) {
+			$this->fill($attributes);
 		}
-		$data = array_intersect_key($data, array_flip(static::$fillable));
-		return self::db()->insert(static::getTable(), $data) ? self::db()->insert_id : null;
+
+		return $this->insertOrUpdate();
 	}
 
 	/**
@@ -411,29 +346,48 @@ abstract class Model implements JsonSerializable
 	 *
 	 * @return bool|int ID inserito o true in caso di update
 	 */
-	public function save(): bool|int
+	public function insertOrUpdate(): bool|int
 	{
-		$pk = static::$primaryKey ?? 'id';
-		$data = [];
-
-		foreach (static::$fillable as $field) {
-			if (array_key_exists($field, $this->attributes)) {
-				$data[$field] = $this->__get($field);
-			}
+		$pk = $this->primaryKey ?? 'id';
+		$builder = static::query();
+		
+		if (!empty($this->attributes[$pk]) && $builder->where($pk, $this->attributes[$pk])->exists()) {
+			return static::query()->where($pk, $this->attributes[$pk])->update($this->attributes);
 		}
 
-		if (isset($this->attributes[$pk]) && $this->exists()) {
-			$this->where($pk, $this->attributes[$pk]);
-
-			return $this->update($data);
-		}
-
-		$id = static::create($data);
+		$id = $builder->create($this->attributes);
 		if ($id) {
 			$this->attributes[$pk] = $id;
 		}
 
 		return $id;
+	}
+
+	/**
+	 * Delete records matching the query.
+	 *
+	 * @return bool True if the deletion was successful
+	 */
+	public function delete(): bool
+	{
+		$pk = $this->primaryKey ?? 'id';
+		$id = $this->attributes[$pk] ?? null;
+
+		if ($id === null) {
+			throw new \RuntimeException("Cannot delete model without primary key value.");
+		}
+
+		$q = static::query()->where($pk, $id);
+
+		if ($this->trashable) {
+			$data = ['deleted_at' => current_time('mysql')];
+			if (!empty($this->timestamps)) {
+				$data['updated_at'] = current_time('mysql');
+			}
+			return $q->softDelete($data);
+		}
+
+		return $q->delete();
 	}
 
 	/**
@@ -445,96 +399,12 @@ abstract class Model implements JsonSerializable
 	public function fill(array $data): static
 	{
 		foreach ($data as $key => $value) {
-			if (in_array($key, static::$fillable, true)) {
+			if (in_array($key, $this->fillable, true)) {
 				$this->__set($key, $value);
 			}
 		}
+
 		return $this;
-	}
-
-	/**
-	 * Update records matching the query.
-	 *
-	 * @param array $data The data to update
-	 * @return bool True if the update was successful
-	 */
-	public function update(array $data): bool
-	{
-		if (static::$timestamps) {
-			$data['updated_at'] = current_time('mysql');
-		}
-		$data = array_intersect_key($data, array_flip(static::$fillable));
-		if (empty($data)) {
-			return false;
-		}
-
-		$query = "UPDATE " . static::getTable() . " SET ";
-		$query .= implode(', ', array_map(fn($col) => "`" . esc_sql($col) . "` = %s", array_keys($data)));
-		$query = $this->buildQuery($query);
-
-		return (bool) self::db()->query(self::db()->prepare($query, ...array_values($data), ...$this->bindings));
-	}
-
-	/**
-	 * Delete records matching the query.
-	 *
-	 * @return bool True if the deletion was successful
-	 */
-	public function delete(): bool
-	{
-		$pk = static::$primaryKey ?? 'id';
-		$this->where($pk, $this->attributes[$pk]);
-		if (static::$trashable) {
-			return $this->update(['deleted_at' => current_time('mysql')]);
-		}
-		
-		$query = "DELETE FROM " . static::getTable();
-		$query = $this->buildQuery($query);
-		return (bool) self::db()->query(self::db()->prepare($query, ...$this->bindings));
-	}
-
-	/**
-	 * Cast an attribute to its appropriate type.
-	 *
-	 * @param string $key The attribute key
-	 * @param mixed $value The value to cast
-	 * @return mixed The casted value
-	 */
-	protected function castAttribute(string $key, mixed $value): mixed
-	{
-		$type = static::$casts[$key] ?? null;
-
-		return match ($type) {
-			'int'      => (int) $value,
-			'float'    => (float) $value,
-			'string'   => (string) $value,
-			'bool'     => filter_var($value, FILTER_VALIDATE_BOOLEAN),
-			'array'    => is_string($value) ? json_decode($value, true) : (array) $value,
-			'datetime' => $value ? new \DateTimeImmutable($value) : null,
-			default    => $value,
-		};
-	}
-
-	/**
-	 * Cast an attribute to its appropriate type for storage.
-	 *
-	 * @param string $key The attribute key
-	 * @param mixed $value The value to cast
-	 * @return mixed The casted value
-	 */
-	protected function castToStorage(string $key, mixed $value): mixed
-	{
-		$type = static::$casts[$key] ?? null;
-
-		return match ($type) {
-			'int'      => (int) $value,
-			'float'    => (float) $value,
-			'string'   => (string) $value,
-			'bool'     => $value ? 1 : 0,
-			'array'    => json_encode($value),
-			'datetime' => $value instanceof \DateTimeInterface ? $value->format('Y-m-d H:i:s') : $value,
-			default    => $value,
-		};
 	}
 
 	/**
@@ -542,22 +412,34 @@ abstract class Model implements JsonSerializable
 	 *
 	 * @return array The model attributes as an array
 	 */
-	public function toArray(): array
+	public function toArray(array $__seen = []): array
 	{
-		$result = [];
-	
+		$out = [];
 		foreach (array_keys($this->attributes) as $key) {
-			$value = $this->__get($key);
-	
-			if ($value instanceof \DateTimeInterface) {
-				$result[$key] = $value->format('Y-m-d H:i:s');
-			} else {
-				$result[$key] = $value;
+			$val = $this->__get($key);
+			$out[$key] = $val instanceof \DateTimeInterface ? $val->format('Y-m-d H:i:s') : $val;
+		}
+
+		if (!empty($this->with)) {
+			$this->appendTreeToArray($out, $this->with, $this, $__seen);
+		}
+
+		foreach ($this->relations as $name => $value) {
+			if (!array_key_exists($name, $out)) {
+				$out[$name] = $this->serializeRelationValue($value, $__seen);
 			}
 		}
-	
-		return $result;
-	}	
+
+		if (!empty($this->appends)) {
+			foreach ($this->appends as $attr) {
+				if (!array_key_exists($attr, $out)) {
+					$out[$attr] = $this->__get($attr);
+				}
+			}
+		}
+
+		return $out;
+	}
 
 	/**
 	 * Convert the model instance to JSON.
@@ -569,38 +451,35 @@ abstract class Model implements JsonSerializable
 	}
 
 	/**
-	 * Define a one-to-one relationship.
+	 * Load the specified relations for the model.
 	 *
-	 * @param string $relatedModel The related model class name
-	 * @param string $foreignKey The foreign key column name
-	 * @return static|null The related record
+	 * @param array|string $relations The relations to load
+	 * 
+	 * @return static The model instance with loaded relations
+	 * 
+	 * @throws \InvalidArgumentException If the relation name is not defined
+	 * @throws \RuntimeException If the relation configuration is invalid
 	 */
-	public function hasOne(string $relatedModel, string $foreignKey): ?static
+	public function load(array|string $relations): static
 	{
-		return $relatedModel::query()->where($foreignKey, '=', $this->{static::$primaryKey})->first();
-	}
+		$relations = is_array($relations) ? $relations : func_get_args();
 
-	/**
-	 * Define a one-to-many relationship.
-	 *
-	 * @param string $relatedModel The related model class name
-	 * @param string $foreignKey The foreign key column name
-	 * @return array The related records
-	 */
-	public function hasMany(string $relatedModel, string $foreignKey): array
-	{
-		return $relatedModel::query()->where($foreignKey, '=', $this->{static::$primaryKey})->get();
-	}
+		// Costruisci un albero a partire dai path passati
+		$tree = [];
+		foreach ($relations as $relation) {
+			$segments = array_values(array_filter(explode('.', $relation)));
+			if (!$segments) continue;
 
-	/**
-	 * Define a belongs-to relationship.
-	 *
-	 * @param string $relatedModel The related model class name
-	 * @param string $foreignKey The foreign key column name
-	 * @return static|null The related record
-	 */
-	public function belongsTo(string $relatedModel, string $foreignKey): ?static
-	{
-		return $relatedModel::query()->where(static::$primaryKey, '=', $this->{$foreignKey})->first();
+			$ref =& $tree;
+			foreach ($segments as $seg) {
+				$ref[$seg] = $ref[$seg] ?? [];
+				$ref =& $ref[$seg];
+			}
+		}
+
+		// Carica ricorsivamente seguendo l’albero
+		$this->loadTree($this, $tree);
+
+		return $this;
 	}
 }

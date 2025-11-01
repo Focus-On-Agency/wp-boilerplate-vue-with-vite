@@ -2,104 +2,115 @@
 
 namespace PluginClassName\Foundation;
 
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
-use ReflectionClass;
-use RegexIterator;
+use Exception;
+use function flush_rewrite_rules;
+use function get_sites;
+use function get_current_network_id;
+use function switch_to_blog;
+use function restore_current_blog;
 
 if (!defined('ABSPATH')) {
 	exit;
 }
 
 /**
- * Handles plugin activation and database migrations.
+ * Handles plugin activation and database migrations
  * @since 1.0.0
  */
 class Activator
 {
-	private $newWorkWide;
+	/** @var bool */
+	private bool $networkWide;
 
-	public function __construct(bool $newWorkWide = false)
-	{
-		$this->newWorkWide = $newWorkWide;
-	}
+	private const OPTION_INSTANCE_UUID = 'fson_rrt_instance_uuid';
 
 	/**
-	 * Boot the activator.
+	 * @param bool $networkWide
 	 */
-	public function boot()
+	public function __construct(bool $networkWide = false)
 	{
-		$this->migrateDatabases();
+		$this->networkWide = $networkWide;
+	}
 
+	public function boot(): void
+	{
+		$this->networkWide();
 		flush_rewrite_rules();
 	}
 
-	/**
-	 * Run all database migrations during activation.
-	 *
-	 * @param bool $network_wide Whether the plugin is activated network-wide.
-	 */
-	public function migrateDatabases(): void
+	public function networkWide(): void
 	{
-		global $wpdb;
-
-		if ($this->newWorkWide && function_exists('get_sites') && function_exists('get_current_network_id')) {
+		if ($this->networkWide && function_exists('get_sites') && function_exists('get_current_network_id')) {
 			$site_ids = get_sites([
-				'fields'      => 'ids',
-				'network_id'  => get_current_network_id(),
+				'fields'     => 'ids',
+				'network_id' => get_current_network_id(),
 			]);
 
 			foreach ($site_ids as $site_id) {
 				switch_to_blog($site_id);
-				$this->migrate();
+
+				$this->runMigrator();
+				$this->ensureInstanceUuid();
+				$this->scheduleEvent();
+
 				restore_current_blog();
 			}
 		} else {
-			$this->migrate();
+			$this->runMigrator();
+			$this->ensureInstanceUuid();
+			$this->scheduleEvent();
 		}
 	}
 
-	/**
-	 * Run all registered migrations dynamically.
-	 */
-	private function migrate(): void
+	private function runMigrator(): void
 	{
-		$migrations = $this->getMigrations();
+		try {
+			$migrationsPath = PluginClassName_DIR . 'database/Migrations';
 
-		foreach ($migrations as $migrationClass) {
-			if (class_exists($migrationClass) && is_subclass_of($migrationClass, Migration::class)) {
-				(new $migrationClass())->up();
-			}
+			$migrator = new Migrator(
+				$migrationsPath,
+				'PluginClassName\\Database\\Migrations'
+			);
+
+			$migrator->runPending();
+		} catch (Exception $e) {
+			error_log('[RRT Activator] Migration error: ' . $e->getMessage());
 		}
 	}
 
-	/**
-	 * Get all migration classes dynamically from the Migrations directory.
-	 *
-	 * @return array List of migration class names
-	 */
-	private function getMigrations(): array
+    private function ensureInstanceUuid(): void
+    {
+        $uuid = get_option(self::OPTION_INSTANCE_UUID);
+        if (is_string($uuid) && $uuid !== '') {
+            return;
+        }
+
+        if (function_exists('wp_generate_uuid4')) {
+			// WP ≥5.7
+            $uuid = \wp_generate_uuid4();
+        } else {
+            $uuid = bin2hex(random_bytes(16));
+        }
+
+        update_option(self::OPTION_INSTANCE_UUID, $uuid, true); // autoload yes
+    }
+
+	private function scheduleEvent(): void
 	{
-		$migrations = [];
-		$directory = PLUGIN_CONST_DIR . 'database/Migrations/';
+		add_filter('cron_schedules', function ($s) {
+			$s['every_15_minutes'] = [
+				'interval' => 15 * MINUTE_IN_SECONDS,
+				'display'  => __('Every 15 Minutes', PluginClassName_NAME_SPACE),
+			];
+			return $s;
+		});
 
-		if (!is_dir($directory)) {
-			return $migrations;
+		if (!wp_next_scheduled('fson_rrt_cleanup_drafts')) {
+			wp_schedule_event(time() + 120, 'every_15_minutes', 'fson_rrt_cleanup_drafts');
 		}
 
-		$iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory));
-		$regexIterator = new RegexIterator($iterator, '/^.+\.php$/i', RegexIterator::GET_MATCH);
-
-		foreach ($regexIterator as $file) {
-			$filePath = $file[0];
-			$className = basename($filePath, '.php');
-			$fullClassName = "PluginClassName\\Database\\Migrations\\$className";
-
-			if (class_exists($fullClassName) && is_subclass_of($fullClassName, Migration::class)) {
-				$migrations[] = $fullClassName;
-			}
+		if (!wp_next_scheduled('fson_rrt_remind_bookings')) {
+			wp_schedule_event(time() + 300, 'hourly', 'fson_rrt_remind_bookings');
 		}
-
-		return $migrations;
 	}
 }

@@ -6,6 +6,13 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
+use function add_action;
+use function register_rest_route;
+use function current_user_can;
+use function esc_html;
+use function __;
+use WP_Error;
+
 /**
  * Route class handles the registration and management of WordPress REST API routes.
  *
@@ -23,7 +30,7 @@ class Route {
 	private static ?string $prefix = null;
 
 	/** @var string The REST API namespace for all routes */
-	private static string $namespace = 'pluginlowercase/v1';
+	private static string $namespace = 'PluginClassName/v1';
 
 	/**
 	 * Define a prefix for a group of routes.
@@ -41,7 +48,7 @@ class Route {
 
 		self::$prefix = $previousPrefix;
 
-		add_action('rest_api_init', [self::class, 'register_routes']);
+		self::ensureRegistrationHookAdded();
 	}
 
 	/**
@@ -106,11 +113,11 @@ class Route {
 	 * This method processes the route parameters, handles controller callbacks,
 	 * and adds the route to the WordPress REST API registration queue.
 	 * 
-	 * @param string          $verb			The HTTP verb for the route (GET, POST, PUT, DELETE).
-	 * @param string          $path			The route path, can include dynamic parameters in {param} format.
-	 * @param callable|array  $callback		The callback function or [ControllerClass, method] array.
-	 * @param string|null     $permission	The WordPress capability required to access this route.
-	 * @param array<string, mixed> $args	Additional arguments for route registration.
+	 * @param string          $method     The HTTP method for the route (GET, POST, PUT, DELETE).
+	 * @param string          $path       The route path, can include dynamic parameters in {param} format.
+	 * @param callable|array  $callback   The callback function or [ControllerClass, method] array.
+	 * @param string|null     $permission The WordPress capability required to access this route.
+	 * @param array<string, mixed> $args  Additional arguments for route registration.
 	 * 
 	 * @throws \Exception When the controller class or method doesn't exist.
 	 * @return void
@@ -139,10 +146,10 @@ class Route {
 				throw new \Exception(sprintf('Method %s does not exist in controller %s.', esc_html($method), esc_html($controller)));
 			}
 	
+			// Only instantiate controller if method is not static
 			if (!(new \ReflectionMethod($controller, $method))->isStatic()) {
 				$callback = [new $controller(), $method];
 			}
-			$controller = new $controller();
 		}
 
 
@@ -154,7 +161,7 @@ class Route {
 			'args'       => $args,
 		];
 
-		add_action('rest_api_init', [self::class, 'register_routes']);
+		self::ensureRegistrationHookAdded();
 	}
 
 	/**
@@ -194,20 +201,34 @@ class Route {
 	}
 
 	/**
+	 * Ensures the registration hook is added only once.
+	 * 
+	 * @return void
+	 */
+	private static function ensureRegistrationHookAdded(): void {
+		static $hookAdded = false;
+		
+		if (!$hookAdded) {
+			add_action('rest_api_init', [self::class, 'register_routes']);
+			$hookAdded = true;
+		}
+	}
+
+	/**
 	 * Checks user permissions before executing the API request.
 	 * 
 	 * @param string|null $capability The required permission to access the route.
 	 * 
 	 * @return bool|\WP_Error
 	 */
-	private static function check_permissions(?string $capability): bool|\WP_Error
+	private static function check_permissions(?string $capability): bool|WP_Error
 	{
 		if ($capability === null) {
 			return true;
 		}
 
 		if (!current_user_can($capability)) {
-			return new \WP_Error('rest_forbidden', __('You do not have permissions to access this resource.', 'pluginslug'), ['status' => 403]);
+			return new WP_Error('rest_forbidden', __('You do not have permissions to access this resource.', PluginClassName_NAME_SPACE), ['status' => 403]);
 		}
 		return true;
 	}

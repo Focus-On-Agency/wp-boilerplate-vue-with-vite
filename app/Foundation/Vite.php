@@ -3,6 +3,17 @@
 namespace PluginClassName\Foundation;
 
 use Exception;
+use function add_filter;
+use function wp_register_script;
+use function wp_enqueue_script;
+use function wp_enqueue_style;
+use function esc_html;
+use function esc_url;
+use const WP_DEBUG;
+
+if (!defined('ABSPATH')) {
+	exit;
+}
 
 class Vite
 {
@@ -14,11 +25,12 @@ class Vite
 	private array $moduleScripts = [];
 	private bool $isScriptFilterAdded = false;
 	private array $manifestData = [];
+	private bool $manifestLoaded = false;
 
 
-	public static function __callStatic($method, $params)
+	public static function getInstance(): self
 	{
-		if (static::$instance == null) {
+		if (static::$instance === null) {
 			static::$instance = new static();
 			if (!static::isDevMode()) {
 				(static::$instance)->viteManifest();
@@ -73,7 +85,7 @@ class Vite
 		;
 
 		if (!$version) {
-			$version = file_exists($srcPath) ? filemtime($srcPath) : RESTURANTTABLERESERVATIONSANDTAKEAWAY2_VERSION;
+			$version = file_exists($srcPath) ? filemtime($srcPath) : PluginClassName_VERSION;
 		}
 
 		wp_enqueue_style($handle, $srcPath, $dependency, $version);
@@ -81,22 +93,26 @@ class Vite
 
 	private function viteManifest(): void
 	{
-		if (!empty($this->manifestData)) {
+		// Return if already loaded
+		if ($this->manifestLoaded) {
 			return;
 		}
 
 		$manifestPath = realpath(__DIR__ . '/../../assets/manifest.json');
 
 		if (!file_exists($manifestPath)) {
+			$this->manifestLoaded = true;
 			throw new Exception('Vite Manifest Not Found. Run: npm run dev or npm run build');
 		}
 
 		$manifestContent = file_get_contents($manifestPath);
 		if (!$manifestContent) {
+			$this->manifestLoaded = true;
 			throw new Exception("Failed to read manifest file.");
 		}
 
 		$this->manifestData = json_decode($manifestContent, true, 512, JSON_THROW_ON_ERROR);
+		$this->manifestLoaded = true;
 	}
 
 	/**
@@ -106,7 +122,11 @@ class Vite
 	{
 		$fullSrc = $this->resourceDirectory . $src;
 
-		if (!isset($this->manifestData[$fullSrc]) && self::isDevMode()) {
+		// Check if file exists in manifest
+		if (!isset($this->manifestData[$fullSrc])) {
+			if (self::isDevMode() && defined('WP_DEBUG') && WP_DEBUG) {
+				error_log("Vite: File '{$src}' not found in manifest");
+			}
 			throw new Exception(esc_html("$src file not found in Vite manifest. Make sure it is included in rollupOptions input and rebuild."));
 		}
 
@@ -123,7 +143,7 @@ class Vite
 
 	public static function isDevMode(): bool
 	{
-		return defined('PLUGIN_CONST_DEVELOPMENT') && PLUGIN_CONST_DEVELOPMENT === 'yes';
+		return defined('PluginClassName_DEVELOPMENT') && PluginClassName_DEVELOPMENT === 'yes';
 	}
 
 	private static function getDevPath(): string
@@ -133,7 +153,7 @@ class Vite
 
 	private static function getAssetPath(): string
 	{
-		return PLUGIN_CONST_URL . 'assets/';
+		return PluginClassName_URL . 'assets/';
 	}
 
 	private static function getProductionFilePath($file): string
@@ -147,6 +167,23 @@ class Vite
 				);
 			}
 		}
+
+		if (isset($file['imports']) && is_array($file['imports'])) {
+			foreach ($file['imports'] as $import) {
+				if (isset(self::getInstance()->manifestData[$import])) {
+					$imported = self::getInstance()->manifestData[$import];
+					if (isset($imported['css']) && is_array($imported['css'])) {
+						foreach ($imported['css'] as $key => $css) {
+							wp_enqueue_style(
+								$import . '_' . $key . '_css',
+								$assetPath . $css
+							);
+						}
+					}
+				}
+			}
+		}
+		
 		return ($assetPath . $file['file']);
 	}
 }

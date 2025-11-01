@@ -3,12 +3,25 @@
 namespace PluginClassName\Foundation\RegistrableEntity;
 
 use PluginClassName\Foundation\RegistrableEntity;
+use PluginClassName\Support\Logger;
+use function current_user_can;
+use function register_post_type;
+use function is_wp_error;
+use function taxonomy_exists;
+use function register_taxonomy_for_object_type;
+use function register_post_meta;
+use const WP_DEBUG;
+
+if (!defined('ABSPATH')) {
+	exit;
+}
 
 class CPT extends RegistrableEntity
 {
 	protected string $slug;
 	protected array $args = [];
 	protected array $taxonomies = [];
+	protected array $meta = [];
 
 	public function __construct(string $slug)
 	{
@@ -16,8 +29,9 @@ class CPT extends RegistrableEntity
 		$this->args = [
 			'public' => true,
 			'has_archive' => true,
+			'show_in_rest' => true,
 			'show_in_menu' => true,
-			'supports' => ['title', 'editor'],
+			'supports' => ['title', 'editor', 'custom-fields'],
 			'labels' => [],
 		];
 	}
@@ -34,6 +48,9 @@ class CPT extends RegistrableEntity
 
 	public function title(string $title): static
 	{
+		if (empty(trim($title))) {
+			throw new \InvalidArgumentException('Title cannot be empty');
+		}
 		$this->args['labels']['name'] = $title;
 		$this->args['labels']['menu_name'] = $title;
 		return $this;
@@ -41,6 +58,9 @@ class CPT extends RegistrableEntity
 
 	public function singular_name(string $singularName): static
 	{
+		if (empty(trim($singularName))) {
+			throw new \InvalidArgumentException('Singular name cannot be empty');
+		}
 		$this->args['labels']['singular_name'] = $singularName;
 		$this->args['labels']['add_new'] = "Add New $singularName";
 		$this->args['labels']['add_new_item'] = "Add New $singularName";
@@ -60,6 +80,9 @@ class CPT extends RegistrableEntity
 
 	public function supports(array $supports): static
 	{
+		if (empty($supports)) {
+			throw new \InvalidArgumentException('Supports array cannot be empty');
+		}
 		$this->args['supports'] = $supports;
 		return $this;
 	}
@@ -82,6 +105,24 @@ class CPT extends RegistrableEntity
 		return $this;
 	}
 
+	public function not_public(): static
+	{
+		$this->args['public'] = false;
+		return $this;
+	}
+
+	public function setPubliclyQueryable(bool $value = true): static
+	{
+		$this->args['publicly_queryable'] = $value;
+		return $this;
+	}
+
+	public function not_has_archive(): static
+	{
+		$this->args['has_archive'] = false;
+		return $this;
+	}
+
 	public function add_category_support(array|string $taxonomies = []): static
 	{
 		$this->taxonomies = array_merge(
@@ -92,12 +133,50 @@ class CPT extends RegistrableEntity
 		return $this;
 	}
 
+	public function add_meta(string $key, string $type = 'string', bool $single = true, bool $show_in_rest = true, ?callable $auth_callback = null): static
+	{
+		$this->meta[] = [
+			'key' => $key,
+			'args' => [
+				'type'         => $type,
+				'single'       => $single,
+				'show_in_rest' => $show_in_rest,
+				'auth_callback' => $auth_callback ?? fn() => current_user_can('edit_posts'),
+			]
+		];
+
+		return $this;
+	}
+
 	public function register(): void
 	{
-		register_post_type($this->slug, $this->args);
+		$result = register_post_type($this->slug, $this->args);
 
+		if (is_wp_error($result)) {
+			throw new \Exception("Failed to register post type '{$this->slug}': " . $result->get_error_message());
+		}
+
+		// Register taxonomies with error handling
 		foreach ($this->taxonomies as $taxonomy) {
+			if (!taxonomy_exists($taxonomy)) {
+				if (defined('WP_DEBUG') && WP_DEBUG) {
+					error_log("CPT: Taxonomy '{$taxonomy}' does not exist for post type '{$this->slug}'");
+				}
+				continue;
+			}
 			register_taxonomy_for_object_type($taxonomy, $this->slug);
 		}
+
+		// Register meta fields with validation
+		foreach ($this->meta as $metaField) {
+			if (empty($metaField['key'])) {
+				if (defined('WP_DEBUG') && WP_DEBUG) {
+					error_log("CPT: Empty meta key for post type '{$this->slug}'");
+				}
+				continue;
+			}
+			$res = register_post_meta($this->slug, $metaField['key'], $metaField['args']);
+		}
+
 	}
 }

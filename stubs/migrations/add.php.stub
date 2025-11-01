@@ -1,0 +1,28 @@
+<?php
+
+namespace {{NAMESPACE}};
+
+use PluginClassName\Foundation\Migration\Migration;
+use PluginClassName\Foundation\Migration\Schema\Schema;
+use PluginClassName\Foundation\Migration\Schema\Blueprint;
+
+if (!defined('ABSPATH')) { exit; }
+
+return new class extends Migration
+{
+    protected static string $table = '{{TABLE}}';
+
+    public function up(): void
+    {
+        Schema::table(static::$table, function (Blueprint $table) {
+            $table->string('{{COLUMN}}', 255, true);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table(static::$table, function (Blueprint $table) {
+            $table->dropColumn('{{COLUMN}}');
+        });
+    }
+};

@@ -24,7 +24,29 @@ console.log(`📦  Creating ZIP: ${zipName}`);
 try {
 	// Crea lo zip escludendo file di sviluppo
 	execSync(
-		`zip -r ${zipName} . -x "node_modules/*" "scripts/*" "*.log" "*.lock" "*.json" "*.config.*" ".vite/*" "vite.config.*" ".git*" "resources/*" "README.md"`,
+		`zip -r ${zipName} . -x \
+			"vite.config.*" \
+			"*.config.*" \
+			".vite/*" \
+			"*.log" \
+			"package*.json" \
+			"composer*.json" \
+			"tsconfig*.json" \
+			"eslint*.json" \
+			".prettierrc" \
+			".stylelintrc*" \
+			".trae/*" \
+			"node_modules/*" \
+			"scripts/*" \
+			"aladin.js" \
+			"resources/*" \
+			"app/Foundation/Console/*" \
+			"stubs/*" \
+			"README.md" \
+			"*.DS_Store" \
+			".git*" \
+			"!.gitignore" \
+			"*.lock"`,
 		{ stdio: 'inherit' }
 	);
 	console.log(`✅  ZIP created: ${zipName}`);

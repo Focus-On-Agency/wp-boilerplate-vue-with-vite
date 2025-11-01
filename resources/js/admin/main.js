@@ -1,17 +1,19 @@
 import routes from './routes';
 import { createWebHashHistory, createRouter } from 'vue-router';
-import PluginClassName from './bits/AppMixins';
+import app from '@/bits/elements';
+import AppPlugin from '@/plugins/AppPlugin';
 
 const router = createRouter({
 	history: createWebHashHistory(),
 	routes
 });
 
-const framework = new PluginClassName();
+window.PluginClassNameApp = pluginlowercaseAdmin;
 
-framework.app.config.globalProperties.appVars = window.PluginClassNameAdmin;
+app.use(AppPlugin);
+app.use(router);
 
-window.PluginClassNameApp = framework.app.use(router).mount('#pluginlowercase_app');
+window.PluginClassNameApp = app.mount('#pluginlowercase_app');
 
 router.afterEach((to, from) => {
 	document.querySelectorAll('.pluginlowercase_menu_item').forEach(el => el.classList.remove('active'));

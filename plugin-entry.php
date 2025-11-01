@@ -23,6 +23,9 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 	ob_end_clean();
 }
 
+use Respect\Validation\Factory;
+use PluginClassName\Console\Schedules;
+
 class PluginClassName {
 	public function boot()
 	{
@@ -30,13 +33,26 @@ class PluginClassName {
 		//$this->disableUpdateNag();
 		$this->registerShortCodes();
 		$this->registerEntities();
+		$this->registerJobs();
+		$this->registerCron();
 		$this->renderMenu();
 		$this->loadTextDomain();
+
+		if (defined('WP_CLI') && WP_CLI && defined('PluginClassName_DEVELOPMENT') && PluginClassName_DEVELOPMENT === 'yes') {
+			\WP_CLI::add_command('fson make:migration', \PluginClassName\Foundation\Console\MakeMigration::class);
+			\WP_CLI::add_command('fson make:job', \PluginClassName\Foundation\Console\MakeJob::class);
+		}
 	}
 
 	public function loadClasses()
 	{
 		require_once PLUGIN_CONST_DIR . 'routes/web.php';
+
+		Factory::setDefaultInstance(
+			(new Factory())
+				->withRuleNamespace('PluginClassName\Support\Validation\Rules')
+				->withExceptionNamespace('PluginClassName\Support\Validation\Exceptions')
+		);
 	}
 
 	public function renderMenu()
@@ -89,23 +105,18 @@ class PluginClassName {
 		$pluginlowercase = apply_filters('pluginlowercase/admin_app_vars', array(
 			'assets_url' => PLUGIN_CONST_URL . 'assets/',
 			'ajaxurl' => admin_url('admin-ajax.php'),
-			'i18n' => $translatable
+			'i18n' => $translatable,
+			'rest' => [
+				'url' => rest_url('pluginlowercase/v1/'),
+				'root' => rest_url(),
+				'namespace' => 'pluginlowercase/v1',
+				'nonce' => wp_create_nonce('wp_rest')
+			],
 		));
 
 		wp_localize_script('pluginlowercase-script-boot', 'pluginlowercaseAdmin', $pluginlowercase);
 
-		echo '<div class="pluginlowercase-admin-page" id="pluginlowercase_app">
-			<div class="main-menu text-white-200 bg-wheat-600 p-4">
-				<router-link to="/">
-					Home
-				</router-link> |
-				<router-link to="/contact" >
-					Contacts
-				</router-link>
-			</div>
-			<hr/>
-			<router-view></router-view>
-		</div>';
+		echo '<div class="pluginlowercase-admin-page" id="pluginlowercase_app"></div>';
 	}
 
 	/*
@@ -155,6 +166,9 @@ class PluginClassName {
 	 */
 	public function registerShortCodes()
 	{
+		if (defined('LSCWP_V')) {
+			do_action('litespeed_control_set_nocache');
+		}
 		// Use add_shortcode('shortcode_name', 'function_name') to register shortcode
 	}
 
@@ -194,8 +208,47 @@ class PluginClassName {
 		}
 	}
 
+	/*
+	 * Register all jobs here
+	 */
+	public function registerJobs(): void
+	{
+		// Use ScheduledJobManager to register jobs
+	}
+
+	/*
+	 * Register all cron jobs here
+	 */
+	public function registerCron(): void
+	{
+		// Add new interval
+		$schedules = new Schedules();
+
+		$schedules->register();
+	}
+
 }
 
 (new PluginClassName())->boot();
 
 register_activation_hook(__FILE__, ['PluginClassName', 'activate']);
+
+add_action('upgrader_process_complete', function ($upgrader, $options) {
+    if ($options['action'] === 'update' && $options['type'] === 'plugin') {
+        if (!empty($options['plugins']) && in_array(plugin_basename(__FILE__), $options['plugins'], true)) {
+            $migrator = new \PluginClassName\Foundation\Migrator(
+                PLUGIN_CONST_DIR . 'database/Migrations',
+                'PluginClassName\\Database\\Migrations'
+            );
+            $migrator->runPending();
+        }
+    }
+}, 10, 2);
+
+register_deactivation_hook(__FILE__, function () {
+	
+	// Clear scheduled events
+    //if ($ts = wp_next_scheduled('event_hook_name')) {
+    //    wp_unschedule_event($ts, 'event_hook_name');
+    //}
+});
