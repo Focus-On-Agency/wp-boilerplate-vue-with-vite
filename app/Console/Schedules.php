@@ -25,7 +25,6 @@ class Schedules
 
     static public function register(): void
     {
-       add_action('fson_rrt_cleanup_drafts', [CleanupDraftBookings::class, 'run']);
-       add_action('fson_rrt_remind_bookings', [BookingReminder::class, 'run']);
+       //
     }
 }
